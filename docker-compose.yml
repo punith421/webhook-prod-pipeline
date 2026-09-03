@@ -1,0 +1,112 @@
+version: "3.9"
+
+# Full production-shaped stack: Redis (durable queue backend), the
+# receiver API (accepts webhooks), the receiver worker (processes them
+# - runs as its own scalable service), and the sender (Website A).
+#
+# Scale workers independently of the API layer, e.g.:
+#   docker-compose up --scale receiver-worker=5
+#
+# All 5 worker replicas pull from the SAME Redis queue, so load is
+# spread automatically across them - no coordination logic needed.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: webhooks
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d webhooks"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  receiver-migrate:
+    build: ./receiver
+    command: ["npx", "prisma", "migrate", "deploy"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/webhooks?schema=public
+
+  receiver-api:
+    build: ./receiver
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      receiver-migrate:
+        condition: service_completed_successfully
+    ports:
+      - "4000:4000"
+    environment:
+      PORT: 4000
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/webhooks?schema=public
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      CONCURRENCY: 20
+      MAX_ATTEMPTS: 5
+      RATE_LIMIT_PER_MINUTE: 6000
+      NODE_ENV: production
+
+  receiver-worker:
+    build: ./receiver
+    command: ["node", "src/worker.js"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      receiver-migrate:
+        condition: service_completed_successfully
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/webhooks?schema=public
+      CONCURRENCY: 20
+      MAX_ATTEMPTS: 5
+      NODE_ENV: production
+    # No ports exposed - workers don't serve HTTP, they only pull jobs
+    # from Redis. Scale this service, not receiver-api, when processing
+    # throughput (not request-accept rate) is your bottleneck:
+    #   docker-compose up --scale receiver-worker=5
+
+  sender:
+    build: ./sender
+    restart: unless-stopped
+    depends_on:
+      - receiver-api
+    ports:
+      - "5000:5000"
+    environment:
+      PORT: 5000
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      RECEIVER_WEBHOOK_URL: http://receiver-api:4000/webhook
+      NODE_ENV: production
+
+volumes:
+  redis-data:
+  postgres-data:

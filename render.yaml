@@ -1,0 +1,71 @@
+services:
+  - type: keyvalue
+    name: webhook-redis
+    plan: free
+    ipAllowList: []   # only accessible from other services in this workspace
+
+  - type: web
+    name: webhook-receiver-api
+    runtime: node
+    plan: starter          # free tier sleeps on idle - not suitable for a receiver that must always be reachable
+    rootDir: receiver
+    buildCommand: npm install --omit=dev
+    startCommand: node src/server.js
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          name: webhook-redis
+          type: keyvalue
+          property: connectionString
+      - key: WEBHOOK_SECRET
+        sync: false        # set manually in the Render dashboard - never commit secrets to render.yaml
+      - key: CONCURRENCY
+        value: "20"
+      - key: MAX_ATTEMPTS
+        value: "5"
+      - key: RATE_LIMIT_PER_MINUTE
+        value: "6000"
+      - key: NODE_ENV
+        value: production
+
+  # Worker is a separate Background Worker service (no public URL, no
+  # inbound HTTP) so it can be scaled independently of the API.
+  # Increase "numInstances" as processing throughput needs grow.
+  - type: worker
+    name: webhook-receiver-worker
+    runtime: node
+    plan: starter
+    numInstances: 2
+    rootDir: receiver
+    buildCommand: npm install --omit=dev
+    startCommand: node src/worker.js
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          name: webhook-redis
+          type: keyvalue
+          property: connectionString
+      - key: CONCURRENCY
+        value: "20"
+      - key: MAX_ATTEMPTS
+        value: "5"
+      - key: NODE_ENV
+        value: production
+
+  - type: web
+    name: webhook-sender
+    runtime: node
+    plan: starter
+    rootDir: sender
+    buildCommand: npm install --omit=dev
+    startCommand: node src/server.js
+    envVars:
+      - key: WEBHOOK_SECRET
+        sync: false         # must match webhook-receiver-api's WEBHOOK_SECRET exactly
+      - key: RECEIVER_URL
+        fromService:
+          name: webhook-receiver-api
+          type: web
+          property: host
+      - key: NODE_ENV
+        value: production

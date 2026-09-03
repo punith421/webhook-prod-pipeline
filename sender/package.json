@@ -1,0 +1,20 @@
+{
+  "name": "webhook-sender-prod",
+  "version": "1.0.0",
+  "description": "Production webhook sender: HMAC-signed requests, bounded send concurrency",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "NODE_ENV=development node src/server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "helmet": "^7.1.0",
+    "pino": "^9.4.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "pino-pretty": "^11.2.2"
+  }
+}
