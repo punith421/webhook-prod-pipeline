@@ -7,6 +7,7 @@ RUN npm install --omit=dev --no-audit --no-fund
 
 COPY prisma ./prisma
 RUN npx prisma generate
+RUN ls -la /app/node_modules/.prisma/client/
 
 COPY src ./src
 COPY public ./public
